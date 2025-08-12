@@ -1,0 +1,385 @@
+--[[
+Sumoap Full Script
+- Key GUI (key = "Cailcoincard") + Copy Link
+- Toggle GUI button
+- Speed (Normal / TPWalk)
+- Fling (Touch / All continuous spin+push / Spin build-then-fling)
+- NPC ESP (list + search + line + billboard)
+- Player ESP (list + search + avatar image headshot + toggle)
+- Godmode: Killbrick / Sword / Both (best-effort restore health & intercept)
+- GUI locked (non-draggable)
+Notes: Many operations may be blocked by server protections. This is client-side best-effort.
+--]]
+
+-- CONFIG
+local CORRECT_KEY = "Cailcoincard"
+local GET_KEY_LINK = "https://linkvertise.com/1379842/dYrmoUtZ7Z3S?o=sharing"
+
+-- TUNABLES
+local ALL_COOLDOWN = 0.6
+local ALL_INTERVAL = 0.18
+local SPIN_INCREMENT = 10
+local SPIN_THRESHOLD_DEFAULT = 120
+local TOUCH_THROTTLE = 0.6
+
+-- SERVICES
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local CoreGui = game:GetService("CoreGui")
+local Workspace = game:GetService("Workspace")
+
+local LocalPlayer = Players.LocalPlayer
+
+-- UTILS
+local function safeSetClipboard(text)
+    pcall(function() if setclipboard then setclipboard(text) end end)
+end
+
+local function new(inst, props)
+    local o = Instance.new(inst)
+    if props then
+        for k,v in pairs(props) do
+            if k == "Parent" then o.Parent = v else o[k] = v end
+        end
+    end
+    return o
+end
+
+-- Cleanup old GUIs (if re-run)
+pcall(function()
+    for _,n in pairs({"SumoapKeyGui","SumoapToggleGui","SumoapMainGui","SumoapESPGui"}) do
+        if CoreGui:FindFirstChild(n) then CoreGui[n]:Destroy() end
+    end
+end)
+
+-- -----------------------
+-- KEY GUI (locked)
+-- -----------------------
+local KeyGui = new("ScreenGui",{Parent = CoreGui, Name = "SumoapKeyGui", ResetOnSpawn = false})
+local KeyFrame = new("Frame",{Parent = KeyGui, Size = UDim2.new(0,340,0,170), Position = UDim2.new(0.5,-170,0.5,-85),
+    BackgroundColor3 = Color3.fromRGB(28,28,30), Active = true, Draggable = false})
+new("UICorner",{Parent=KeyFrame, CornerRadius=UDim.new(0,10)})
+new("TextLabel",{Parent=KeyFrame, Size=UDim2.new(1,-20,0,36), Position=UDim2.new(0,10,0,8),
+    BackgroundTransparency=1, Text="Enter Key", Font=Enum.Font.GothamBold, TextSize=20, TextColor3=Color3.new(1,1,1), TextXAlignment=Enum.TextXAlignment.Left})
+local KeyBox = new("TextBox",{Parent=KeyFrame, Size=UDim2.new(1,-20,0,36), Position=UDim2.new(0,10,0,48),
+    BackgroundColor3=Color3.fromRGB(45,45,48), Text="", PlaceholderText="Nhập key", Font=Enum.Font.Gotham, TextSize=18, TextColor3=Color3.new(1,1,1)})
+local CopyBtn = new("TextButton",{Parent=KeyFrame, Size=UDim2.new(0.48,-10,0,36), Position=UDim2.new(0,10,0,92),
+    BackgroundColor3=Color3.fromRGB(55,130,240), Text="Copy Link", Font=Enum.Font.GothamBold, TextSize=16, TextColor3=Color3.new(1,1,1)})
+local CheckBtn = new("TextButton",{Parent=KeyFrame, Size=UDim2.new(0.48,-10,0,36), Position=UDim2.new(0.52,0,0,92),
+    BackgroundColor3=Color3.fromRGB(50,200,120), Text="Check Key", Font=Enum.Font.GothamBold, TextSize=16, TextColor3=Color3.new(1,1,1)})
+
+CopyBtn.MouseButton1Click:Connect(function()
+    safeSetClipboard(GET_KEY_LINK)
+    CopyBtn.Text = "Copied!"
+    task.delay(1.0, function() pcall(function() CopyBtn.Text = "Copy Link" end) end)
+end)
+
+-- -----------------------
+-- MAIN GUI (locked)
+-- -----------------------
+local MainGui = new("ScreenGui",{Parent = CoreGui, Name = "SumoapMainGui", ResetOnSpawn=false})
+local MainFrame = new("Frame",{Parent=MainGui, Size=UDim2.new(0,520,0,360), Position=UDim2.new(0.5,-260,0.5,-180),
+    BackgroundColor3=Color3.fromRGB(25,25,28), Visible=false, Active=true, Draggable=false})
+new("UICorner",{Parent=MainFrame, CornerRadius=UDim.new(0,12)})
+
+-- Left column
+local LeftCol = new("Frame",{Parent=MainFrame, Size=UDim2.new(0,160,1,0), Position=UDim2.new(0,0,0,0), BackgroundColor3=Color3.fromRGB(32,32,36)})
+new("UICorner",{Parent=LeftCol, CornerRadius=UDim.new(0,10)})
+
+local function makeLeftBtn(text, y)
+    local b = new("TextButton",{Parent=LeftCol, Size=UDim2.new(1,-16,0,46), Position=UDim2.new(0,8,0,y),
+        BackgroundColor3=Color3.fromRGB(40,40,44), Text=text, Font=Enum.Font.GothamBold, TextSize=16, TextColor3=Color3.new(1,1,1)})
+    new("UICorner",{Parent=b, CornerRadius=UDim.new(0,8)})
+    return b
+end
+
+local SpeedBtn = makeLeftBtn("Speed", 12)
+local FlingBtn = makeLeftBtn("Fling", 72)
+local NPCESPBtn = makeLeftBtn("NPC ESP", 132)
+local PlayerESPBtn = makeLeftBtn("Player ESP", 192)
+local GodmodeBtn = makeLeftBtn("Godmode", 252)
+
+-- Content panel
+local Content = new("Frame",{Parent=MainFrame, Size=UDim2.new(1,-180,1,-16), Position=UDim2.new(0,180,0,8), BackgroundTransparency=1})
+
+local function clearContent()
+    for _,c in ipairs(Content:GetChildren()) do
+        if not c:IsA("UIListLayout") then c:Destroy() end
+    end
+end
+
+local function rowToggle(parent, label, default)
+    local f = new("Frame",{Parent=parent, Size=UDim2.new(1,0,0,48), BackgroundTransparency=1})
+    local lbl = new("TextLabel",{Parent=f, Size=UDim2.new(0.52,0,1,0), BackgroundTransparency=1, Text=label,
+        Font=Enum.Font.Gotham, TextSize=16, TextColor3=Color3.new(1,1,1), TextXAlignment=Enum.TextXAlignment.Left})
+    local tog = new("TextButton",{Parent=f, Size=UDim2.new(0.22,0,0.6,0), Position=UDim2.new(0.56,0,0.2,0),
+        BackgroundColor3=Color3.fromRGB(200,50,50), Text="OFF", Font=Enum.Font.GothamBold, TextSize=14, TextColor3=Color3.new(1,1,1)})
+    new("UICorner",{Parent=tog, CornerRadius=UDim.new(0,6)})
+    local num = new("TextBox",{Parent=f, Size=UDim2.new(0.22,0,0.6,0), Position=UDim2.new(0.8,0,0.2,0),
+        BackgroundColor3=Color3.fromRGB(45,45,48), Text=tostring(default or 10), Font=Enum.Font.Gotham, TextSize=14, TextColor3=Color3.new(1,1,1)})
+    new("UICorner",{Parent=num, CornerRadius=UDim.new(0,6)})
+    return {Frame=f, Label=lbl, Toggle=tog, Number=num}
+end
+
+-- -----------------------
+-- SPEED
+-- -----------------------
+local speedState = {normalEnabled=false, normalSpeed=16, tpwalkEnabled=false, tpwalkSpeed=60}
+local function showSpeed()
+    clearContent()
+    local title = new("TextLabel",{Parent=Content, Size=UDim2.new(1,0,0,28), BackgroundTransparency=1,
+        Text="Speed Settings", Font=Enum.Font.GothamBold, TextSize=18, TextColor3=Color3.new(1,1,1), TextXAlignment=Enum.TextXAlignment.Left})
+    local normalRow = rowToggle(Content, "Normal Speed", speedState.normalSpeed); normalRow.Frame.Position = UDim2.new(0,0,0,36)
+    local tpRow = rowToggle(Content, "TP Walk", speedState.tpwalkSpeed); tpRow.Frame.Position = UDim2.new(0,0,0,92)
+
+    normalRow.Toggle.MouseButton1Click:Connect(function()
+        speedState.normalEnabled = not speedState.normalEnabled
+        normalRow.Toggle.Text = speedState.normalEnabled and "ON" or "OFF"
+        normalRow.Toggle.BackgroundColor3 = speedState.normalEnabled and Color3.fromRGB(50,200,120) or Color3.fromRGB(200,50,50)
+        if not speedState.normalEnabled then pcall(function() if LocalPlayer.Character then local h = LocalPlayer.Character:FindFirstChildOfClass("Humanoid"); if h then h.WalkSpeed = 16 end end end) end
+    end)
+    tpRow.Toggle.MouseButton1Click:Connect(function()
+        speedState.tpwalkEnabled = not speedState.tpwalkEnabled
+        tpRow.Toggle.Text = speedState.tpwalkEnabled and "ON" or "OFF"
+        tpRow.Toggle.BackgroundColor3 = speedState.tpwalkEnabled and Color3.fromRGB(50,200,120) or Color3.fromRGB(200,50,50)
+    end)
+    normalRow.Number.FocusLost:Connect(function() local n = tonumber(normalRow.Number.Text); if n and n>0 and n<=500 then speedState.normalSpeed=n else normalRow.Number.Text=tostring(speedState.normalSpeed) end end)
+    tpRow.Number.FocusLost:Connect(function() local n = tonumber(tpRow.Number.Text); if n and n>0 and n<=2000 then speedState.tpwalkSpeed=n else tpRow.Number.Text=tostring(speedState.tpwalkSpeed) end end)
+end
+
+RunService.Heartbeat:Connect(function(dt)
+    if speedState.normalEnabled then
+        pcall(function()
+            local c = LocalPlayer.Character
+            if c then local h = c:FindFirstChildOfClass("Humanoid") if h and h.Health>0 then h.WalkSpeed = speedState.normalSpeed end end
+        end)
+    end
+    if speedState.tpwalkEnabled then
+        pcall(function()
+            local c = LocalPlayer.Character
+            if c then local root = c:FindFirstChild("HumanoidRootPart") local h = c:FindFirstChildOfClass("Humanoid") if root and h then local dir = h.MoveDirection if dir.Magnitude>0.001 then root.CFrame = root.CFrame + dir.Unit * (speedState.tpwalkSpeed * dt) end end end
+        end)
+    end
+end)
+
+-- -----------------------
+-- FLING (robust)
+-- -----------------------
+local fling = {touchEnabled=false, touchForce=60, allEnabled=false, allForce=100, spinEnabled=false, spinForce=100, spinThreshold=SPIN_THRESHOLD_DEFAULT}
+local lastFling = {}
+local spinAccum = {}
+
+local function throttleSet(pl, cd)
+    lastFling[pl] = tick() + cd
+end
+local function canFling(pl)
+    if not lastFling[pl] then return true end
+    return tick() >= lastFling[pl]
+end
+
+local function playerFromScreen(x,y)
+    local cam = Workspace.CurrentCamera
+    if not cam then return nil end
+    local ray = cam:ScreenPointToRay(x,y)
+    local params = RaycastParams.new()
+    params.FilterDescendantsInstances = {LocalPlayer.Character or {}}
+    params.FilterType = Enum.RaycastFilterType.Blacklist
+    local res = Workspace:Raycast(ray.Origin, ray.Direction * 1000, params)
+    if res and res.Instance then
+        local model = res.Instance:FindFirstAncestorOfClass("Model")
+        if model then
+            local pl = Players:GetPlayerFromCharacter(model)
+            if pl then return pl, model end
+        end
+    end
+    return nil,nil
+end
+
+local function robustFlingCharacter(char, force)
+    if not char then return false end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp or not hrp:IsA("BasePart") then return false end
+    local up = math.max(12, math.floor(force/3))
+    local rx = (math.random()-0.5) * force
+    local rz = (math.random()-0.5) * force
+    local impulse = Vector3.new(rx, up, rz)
+    local ok = false
+    pcall(function() if hrp.ApplyImpulse then hrp:ApplyImpulse(impulse); ok=true end end)
+    if not ok then pcall(function() hrp.AssemblyLinearVelocity = impulse; ok=true end) end
+    if not ok then pcall(function() hrp.Velocity = impulse; ok=true end) end
+    if not ok then
+        pcall(function()
+            local bv = Instance.new("BodyVelocity")
+            bv.MaxForce = Vector3.new(1e6,1e6,1e6)
+            bv.P = 1e5
+            bv.Velocity = impulse
+            bv.Parent = hrp
+            task.delay(0.12, function() pcall(function() bv:Destroy() end) end)
+            ok = true
+        end)
+    end
+    return ok
+end
+
+local function robustSpinCharacter(char, spinPower)
+    if not char then return false end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp or not hrp:IsA("BasePart") then return false end
+    local ok = false
+    pcall(function() if hrp.ApplyAngularImpulse then hrp:ApplyAngularImpulse(Vector3.new(0, spinPower*70, 0)); ok=true end end)
+    if not ok then pcall(function() hrp.AssemblyAngularVelocity = Vector3.new(0, spinPower, 0); ok=true end) end
+    pcall(function()
+        if hrp.ApplyImpulse then hrp:ApplyImpulse(Vector3.new(0, math.abs(spinPower)/1.4, 0)) else hrp.AssemblyLinearVelocity = Vector3.new(0, math.abs(spinPower)/1.4, 0) end
+    end)
+    return ok
+end
+
+-- Input (touch & mouse) for fling touch
+do
+    local mouse = LocalPlayer:GetMouse()
+    mouse.Button1Down:Connect(function()
+        if not fling.touchEnabled then return end
+        local target = mouse.Target
+        if target then
+            local model = target:FindFirstAncestorOfClass("Model")
+            if model then
+                local pl = Players:GetPlayerFromCharacter(model)
+                if pl and pl ~= LocalPlayer and canFling(pl) then
+                    if robustFlingCharacter(model, fling.touchForce) then throttleSet(pl, TOUCH_THROTTLE) end
+                end
+            end
+        else
+            local pl, model = playerFromScreen(mouse.X, mouse.Y)
+            if pl and pl~=LocalPlayer and model and canFling(pl) then
+                if robustFlingCharacter(model, fling.touchForce) then throttleSet(pl, TOUCH_THROTTLE) end
+            end
+        end
+    end)
+
+    if UserInputService.TouchEnabled then
+        UserInputService.TouchTap:Connect(function(touches, processed)
+            if not fling.touchEnabled then return end
+            local t = touches and touches[1]; if not t then return end
+            local x,y = t.X, t.Y
+            local pl, model = playerFromScreen(x,y)
+            if pl and pl~=LocalPlayer and model and canFling(pl) then
+                if robustFlingCharacter(model, fling.touchForce) then throttleSet(pl, TOUCH_THROTTLE) end
+            end
+        end)
+    end
+end
+
+-- Fling All continuous and Spin fling behavior
+do
+    local lastTick = 0
+    RunService.Heartbeat:Connect(function(dt)
+        if fling.allEnabled then
+            if tick() - lastTick >= ALL_INTERVAL then
+                lastTick = tick()
+                for _,pl in ipairs(Players:GetPlayers()) do
+                    if pl ~= LocalPlayer and pl.Character and pl.Character:FindFirstChild("HumanoidRootPart") and canFling(pl) then
+                        robustSpinCharacter(pl.Character, fling.allForce * 0.35)
+                        robustFlingCharacter(pl.Character, fling.allForce)
+                        throttleSet(pl, ALL_COOLDOWN)
+                    end
+                end
+            end
+        end
+
+        if fling.spinEnabled then
+            for _,pl in ipairs(Players:GetPlayers()) do
+                if pl ~= LocalPlayer and pl.Character and pl.Character:FindFirstChild("HumanoidRootPart") then
+                    if not spinAccum[pl] then spinAccum[pl] = 0 end
+                    spinAccum[pl] = spinAccum[pl] + (SPIN_INCREMENT * (fling.spinForce/40)) * (dt * 60/1)
+                    pcall(function() robustSpinCharacter(pl.Character, math.clamp(fling.spinForce/6, 10, 500)) end)
+                    if spinAccum[pl] >= (fling.spinThreshold or SPIN_THRESHOLD_DEFAULT) and canFling(pl) then
+                        robustFlingCharacter(pl.Character, fling.spinForce * 1.2)
+                        spinAccum[pl] = 0
+                        throttleSet(pl, ALL_COOLDOWN)
+                    end
+                end
+            end
+        end
+    end)
+end
+
+local function showFlingUI()
+    clearContent()
+    local title = new("TextLabel",{Parent=Content, Size=UDim2.new(1,0,0,28), BackgroundTransparency=1, Text="Fling Settings",
+        Font=Enum.Font.GothamBold, TextSize=18, TextColor3=Color3.new(1,1,1), TextXAlignment=Enum.TextXAlignment.Left})
+    local touchRow = rowToggle(Content, "Fling Touch (tap target)", fling.touchForce); touchRow.Frame.Position = UDim2.new(0,0,0,36)
+    local allRow = rowToggle(Content, "Fling All (continuous)", fling.allForce); allRow.Frame.Position = UDim2.new(0,0,0,92)
+    local spinRow = rowToggle(Content, "Spin Fling (build then fling)", fling.spinForce); spinRow.Frame.Position = UDim2.new(0,0,0,148)
+
+    local thrLabel = new("TextLabel",{Parent=Content, Size=UDim2.new(0.54,0,0,24), Position=UDim2.new(0,0,0,204), BackgroundTransparency=1,
+        Text="Spin Threshold (higher -> need more spin)", Font=Enum.Font.Gotham, TextSize=14, TextColor3=Color3.new(1,1,1), TextXAlignment=Enum.TextXAlignment.Left})
+    local thrBox = new("TextBox",{Parent=Content, Size=UDim2.new(0.3,0,0,28), Position=UDim2.new(0.56,0,0,200),
+        BackgroundColor3=Color3.fromRGB(45,45,48), Text=tostring(fling.spinThreshold or SPIN_THRESHOLD_DEFAULT), Font=Enum.Font.Gotham, TextSize=14, TextColor3=Color3.new(1,1,1)})
+    new("UICorner",{Parent=thrBox, CornerRadius=UDim.new(0,6)})
+
+    touchRow.Toggle.MouseButton1Click:Connect(function()
+        fling.touchEnabled = not fling.touchEnabled
+        touchRow.Toggle.Text = fling.touchEnabled and "ON" or "OFF"
+        touchRow.Toggle.BackgroundColor3 = fling.touchEnabled and Color3.fromRGB(50,200,120) or Color3.fromRGB(200,50,50)
+    end)
+    allRow.Toggle.MouseButton1Click:Connect(function()
+        fling.allEnabled = not fling.allEnabled
+        allRow.Toggle.Text = fling.allEnabled and "ON" or "OFF"
+        allRow.Toggle.BackgroundColor3 = fling.allEnabled and Color3.fromRGB(50,200,120) or Color3.fromRGB(200,50,50)
+    end)
+    spinRow.Toggle.MouseButton1Click:Connect(function()
+        fling.spinEnabled = not fling.spinEnabled
+        spinRow.Toggle.Text = fling.spinEnabled and "ON" or "OFF"
+        spinRow.Toggle.BackgroundColor3 = fling.spinEnabled and Color3.fromRGB(50,200,120) or Color3.fromRGB(200,50,50)
+    end)
+
+    touchRow.Number.FocusLost:Connect(function() local n=tonumber(touchRow.Number.Text); if n and n>=1 and n<=5000 then fling.touchForce=n else touchRow.Number.Text=tostring(fling.touchForce) end end)
+    allRow.Number.FocusLost:Connect(function() local n=tonumber(allRow.Number.Text); if n and n>=1 and n<=20000 then fling.allForce=n else allRow.Number.Text=tostring(fling.allForce) end end)
+    spinRow.Number.FocusLost:Connect(function() local n=tonumber(spinRow.Number.Text); if n and n>=1 and n<=5000 then fling.spinForce=n else spinRow.Number.Text=tostring(fling.spinForce) end end)
+    thrBox.FocusLost:Connect(function() local n=tonumber(thrBox.Text); if n and n>=10 and n<=10000 then fling.spinThreshold=n else thrBox.Text=tostring(fling.spinThreshold or SPIN_THRESHOLD_DEFAULT) end end)
+end
+
+-- -----------------------
+-- NPC ESP (list + search + line)
+-- -----------------------
+local ESPGui = new("ScreenGui",{Parent = CoreGui, Name = "SumoapESPGui", ResetOnSpawn=false})
+local ESPScreen = new("Frame",{Parent = ESPGui, Size=UDim2.new(1,0,1,0), BackgroundTransparency=1})
+local espActive = {}
+local espList = {}
+local espToggles = {}
+
+local function gatherNPCs()
+    espList = {}
+    for _,obj in pairs(Workspace:GetDescendants()) do
+        if obj:IsA("Model") and obj:FindFirstChildOfClass("Humanoid") and not Players:GetPlayerFromCharacter(obj) then
+            if obj:FindFirstChild("HumanoidRootPart") or obj:FindFirstChild("Torso") or obj:FindFirstChild("UpperTorso") or obj.PrimaryPart then
+                table.insert(espList, obj)
+            end
+        end
+    end
+    table.sort(espList, function(a,b) return tostring(a.Name) < tostring(b.Name) end)
+end
+
+local function showNPCESP()
+    clearContent()
+    gatherNPCs()
+    local title = new("TextLabel",{Parent=Content, Size=UDim2.new(1,0,0,28), BackgroundTransparency=1, Text="NPC ESP",
+        Font=Enum.Font.GothamBold, TextSize=18, TextColor3=Color3.new(1,1,1), TextXAlignment=Enum.TextXAlignment.Left})
+    local searchBox = new("TextBox",{Parent=Content, Size=UDim2.new(0.6,0,0,30), Position=UDim2.new(0,0,0,36),
+        BackgroundColor3=Color3.fromRGB(45,45,48), Text="", PlaceholderText="Search NPC...", Font=Enum.Font.Gotham, TextSize=14, TextColor3=Color3.new(1,1,1)})
+    new("UICorner",{Parent=searchBox, CornerRadius=UDim.new(0,6)})
+    local btnAll = new("TextButton",{Parent=Content, Size=UDim2.new(0.28,0,0,30), Position=UDim2.new(0.62,0,0,36),
+        BackgroundColor3=Color3.fromRGB(80,80,80), Text="Toggle All", Font=Enum.Font.GothamBold, TextSize=14, TextColor3=Color3.new(1,1,1)})
+    new("UICorner",{Parent=btnAll, CornerRadius=UDim.new(0,6)})
+
+    local listFrame = new("ScrollingFrame",{Parent=Content, Size=UDim2.new(1,0,0,180), Position=UDim2.new(0,0,0,76), CanvasSize=UDim2.new(0,0,0,0), ScrollBarThickness=6})
+    local uiList = new("UIListLayout",{Parent=listFrame, SortOrder=Enum.SortOrder.LayoutOrder, Padding=UDim.new(0,4)})
+
+    local function refreshList(filter)
+        for _,c in ipairs(listFrame:GetChildren()) do if not c:IsA("UIListLayout") then c:Destroy() end end
+        local y = 0
+        for i,model in ipairs(espList) do
+            local name = tostring(model.Name or ("NPC"..i))
+            if filter and #filter>0
